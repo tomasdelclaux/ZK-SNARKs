@@ -1,0 +1,56 @@
+{
+  "inputs": [
+    {
+      "name": "puzzle",
+      "public": true,
+      "type": "struct",
+      "components": {
+        "name": "Sudoku",
+        "generics": [],
+        "members": [
+          {
+            "name": "elems",
+            "type": "array",
+            "components": {
+              "size": 9,
+              "type": "array",
+              "components": {
+                "size": 9,
+                "type": "u32"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "sol",
+      "public": false,
+      "type": "struct",
+      "components": {
+        "name": "Solution",
+        "generics": [],
+        "members": [
+          {
+            "name": "elems",
+            "type": "array",
+            "components": {
+              "size": 9,
+              "type": "array",
+              "components": {
+                "size": 9,
+                "type": "u32"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "output": {
+    "type": "tuple",
+    "components": {
+      "elements": []
+    }
+  }
+}

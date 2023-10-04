@@ -1,0 +1,77 @@
+struct Sudoku {
+    u32[9][9] elems;
+}
+struct Solution {
+    u32[9][9] elems;
+}
+
+def check_rows(Solution sol) -> bool {
+    // for each row
+    for u32 i in 0..9 {
+        // for each column
+        for u32 j in 0..9 {
+            // Check that the (i, j)-th element is not equal to any of the
+            // the elements preceding it in the same row.
+            for u32 k in 0..j {
+                assert(sol.elems[i][j] != sol.elems[i][k]);
+            }
+        }
+    }
+    return true;
+}
+
+def check_cols(Solution sol) -> bool {
+    // for each column
+    for u32 i in 0..9 {
+        // for each row
+        for u32 j in 0..9 {
+            // Check that the (i, j)-th element is not equal to any of the
+            // the elements preceding it in the same column.
+            for u32 k in 0..i {
+                assert(sol.elems[j][i] != sol.elems[j][k]);
+            }
+        }
+    }
+    return true; 
+}
+
+def check_3x3(u32 srow, u32 erow, u32 scol, u32 ecol, Solution sol) -> bool{
+    u32 [9] mut a = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    u32 [9] b = [1,2,3,4,5,6,7,8,9];
+    for u32 i in srow..erow{
+        for u32 j in scol..ecol{
+            a[sol.elems[i][j]-1]=sol.elems[i][j];
+        }
+    }
+    assert(a==b);
+    return true; 
+}
+
+def check_puzzle_matches_solution(Solution sol, Sudoku puzzle) -> bool {
+    for u32 i in 0..9 {
+        for u32 j in 0..9 {
+            assert((sol.elems[i][j] > 0) && (sol.elems[i][j] < 10));
+            assert(\
+                (puzzle.elems[i][j] == 0) ||\
+                (puzzle.elems[i][j] == sol.elems[i][j])\
+            );
+        }
+    }
+    return true;
+}
+
+def main(public Sudoku puzzle, private Solution sol) {
+    assert(check_puzzle_matches_solution(sol, puzzle));
+    assert(check_rows(sol));
+    assert(check_cols(sol));
+    assert(check_3x3(0,3,0,3,sol));
+    assert(check_3x3(0,3,3,6,sol));
+    assert(check_3x3(0,3,6,9,sol));
+    assert(check_3x3(3,6,0,3,sol));
+    assert(check_3x3(3,6,3,6,sol));
+    assert(check_3x3(3,6,3,9,sol));
+    assert(check_3x3(6,9,0,3,sol));
+    assert(check_3x3(6,9,3,6,sol));
+    assert(check_3x3(6,9,6,9,sol));
+    assert(true);
+}
