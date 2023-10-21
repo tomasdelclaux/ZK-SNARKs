@@ -1,66 +1,105 @@
 use ark_ff::Field;
-use ark_groth16::Groth16;
-use ark_r1cs_std::{
-    prelude::{Boolean, EqGadget, AllocVar},
-    uint8::UInt8
+use ark_relations::{
+    lc,
+    r1cs::{ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef, SynthesisError},
 };
-use ark_bls12_377::{Bls12_377, Fr};
-use ark_relations::lc;
-use ark_relations::r1cs::{SynthesisError, ConstraintSystem, ConstraintSynthesizer, ConstraintSystemRef};
 use ark_snark::CircuitSpecificSetupSNARK;
 use ark_std::rand::{Rng, RngCore, SeedableRng};
 use ark_std::test_rng;
 
-
-use cmp::CmpGadget;
-mod cmp;
-
-
-struct Puzzle {
-    A: Option<usize>,
-    B: Option<usize>,
-    C:  Option<usize>
+// verifier wants to prove that she knows some x such that x^3 + x + 5 == 35
+// or more general x^3 + x + 5 == (a public value)
+struct CubicDemoCircuit<F: Field> {
+    pub x: Option<F>,
 }
 
-impl<'a, F: Field> ConstraintSynthesizer<F> for Puzzle {
+impl<F: Field> ConstraintSynthesizer<F> for CubicDemoCircuit<F> {
     fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
-        let cs = ConstraintSystem::<F>::new_ref();
+        // With two intermediate variables sym_1, y,
+        // sym_2, x^3 + x + 5 == out can be flattened into following equations:
+        // x * x = tmp_1
+        // tmp_1 * x = y
+        // y + x = tmp_2
+        // tmp_2 + 5 = out
+        // so R1CS  w = [one, x, tmp_1, y, tmp_2, out]
 
-        let mut a = self.A;
-        let mut b = self.B;
+        // allocate witness x
+        let x_val = self.x;
+        let x = cs.new_witness_variable(|| x_val.ok_or(SynthesisError::AssignmentMissing))?;
 
-        let mut a_value = cs.new_witness_variable(|| a.ok_or(SynthesisError::AssignmentMissing))?;
-        let mut b_value = cs.new_witness_variable(|| b.ok_or(SynthesisError::AssignmentMissing))?;
+        // x * x = tmp_1, allocate tmp_1
+        let tmp_1_val = x_val.map(|e| e.square());
+        let tmp_1 =
+            cs.new_witness_variable(|| tmp_1_val.ok_or(SynthesisError::AssignmentMissing))?;
+        // enforce constraints x * x = tmp_1
+        cs.enforce_constraint(lc!() + x, lc!() + x, lc!() + tmp_1)?;
 
-        let c_value = a_value.map(|mut e| {
-            e.add_assign(b_value);
+        // tmp_1 * x = y, allocate y
+        let x_cubed_val = tmp_1_val.map(|mut e| {
+            e.mul_assign(&x_val.unwrap());
             e
         });
+        let x_cubed =
+            cs.new_witness_variable(|| x_cubed_val.ok_or(SynthesisError::AssignmentMissing))?;
+        // enforce constraints tmp_1 * x = y
+        cs.enforce_constraint(lc!() + tmp_1, lc!() + x, lc!() + x_cubed)?;
 
+        // allocate the public output variable out
+        let out = cs.new_input_variable(|| {
+            let mut tmp = x_cubed_val.unwrap();
+            tmp.add_assign(&x_val.unwrap());
+            tmp.add_assign(F::from(5u32));
+            Ok(tmp)
+        })?;
+        // enforce constraints tmp_2 + 5 = out
         cs.enforce_constraint(
-            lc!() + a_value,
-            lc!() + b_value,
-            lc!() + c_value,
+            lc!() + x_cubed + x + (F::from(5u32), ConstraintSystem::<F>::one()),
+            lc!() + ConstraintSystem::<F>::one(),
+            lc!() + out,
         )?;
 
         Ok(())
     }
 }
 
-
 fn main() {
-    println!("ZERO KNOWLEDGE SUDOKU R1CS");
-    use ark_bls12_381::Fq as F;
+    use ark_bls12_381::{Bls12_381, Fr as BlsFr};
+    use ark_groth16::Groth16;
+    use ark_snark::SNARK;
 
-    let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(test_rng().next_u64());
+        let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(test_rng().next_u64());
 
-    let (pk, vk) = {
-        let c = Puzzle<Fr> {
-            A:None,
-            B:None,
-            C:None
-        };
-        Groth16::<Bls12_377>::setup(c, &mut rng).unwrap()
-    };
+        // generate the setup parameters
+        let (pk, vk) = Groth16::<Bls12_381>::setup(
+            CubicDemoCircuit::<BlsFr> { x: None },
+            &mut rng,
+        )
+            .unwrap();
 
+        // calculate the proof by passing witness variable value
+        let proof1 = Groth16::<Bls12_381>::prove(
+            &pk,
+            CubicDemoCircuit::<BlsFr> {
+                x: Some(BlsFr::from(3)),
+            },
+            &mut rng,
+        )
+            .unwrap();
+
+        // validate the proof
+        assert!(Groth16::<Bls12_381>::verify(&vk, &[BlsFr::from(35)], &proof1).unwrap());
+
+        // calculate the proof by passing witness variable value
+        let proof2 = Groth16::<Bls12_381>::prove(
+            &pk,
+            CubicDemoCircuit::<BlsFr> {
+                x: Some(BlsFr::from(4)),
+            },
+            &mut rng,
+        )
+            .unwrap();
+        assert!(Groth16::<Bls12_381>::verify(&vk, &[BlsFr::from(73)], &proof2).unwrap());
+
+        assert!(!Groth16::<Bls12_381>::verify(&vk, &[BlsFr::from(35)], &proof2).unwrap());
+        assert!(!Groth16::<Bls12_381>::verify(&vk, &[BlsFr::from(73)], &proof1).unwrap());
 }
