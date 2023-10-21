@@ -4,9 +4,13 @@ use ark_r1cs_std::{
     prelude::{Boolean, EqGadget, AllocVar},
     uint8::UInt8
 };
-use ark_bls12_377::{Bls12_377, Fr};
-use ark_relations::r1cs::{SynthesisError, ConstraintSystem};
-use ark_snark::CircuitSpecificSetupSNARK;
+use ark_bls12_381::{Bls12_381, Fr as BlsFr};
+use ark_relations::{
+    lc, ns,
+    r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError, Variable},
+};
+use ark_relations::r1cs::ConstraintSystem;
+use ark_snark::{CircuitSpecificSetupSNARK, SNARK};
 use ark_std::rand::{Rng, RngCore, SeedableRng};
 use ark_std::test_rng;
 
@@ -19,6 +23,11 @@ mod alloc;
 pub struct Sudoku<const N: usize, ConstraintF: Field>([[UInt8<ConstraintF>; N]; N]);
 
 pub struct Solution<const N: usize, ConstraintF: Field>([[UInt8<ConstraintF>; N]; N]);
+
+struct Puzzle<const N:usize> {
+    sudoku: Option<[[u8; N]; N]>,
+    solution: Option<[[u8; N]; N]>
+}
 
 
 fn check_rows<const N: usize, ConstraintF: Field>(
@@ -107,79 +116,25 @@ fn check_helper<const N: usize, ConstraintF: Field>(
     assert!(cs.is_satisfied().unwrap());
 }
 
-impl<'a, F: Field> ConstraintSynthesizer<F> for MiMCDemo<'a, F> {
+impl<const N:usize, F: Field> ConstraintSynthesizer<F> for Puzzle<N> {
     fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
-        assert_eq!(self.constants.len(), MIMC_ROUNDS);
+        let mut sudoku = self.sudoku;
+        let mut solution = self.solution;
 
-        // Allocate the first component of the preimage.
-        let mut xl_value = self.xl;
-        let mut xl =
-            cs.new_witness_variable(|| xl_value.ok_or(SynthesisError::AssignmentMissing))?;
+        let mut sudoku_var = Sudoku::new_witness(cs.clone(), || sudoku.ok_or(SynthesisError::AssignmentMissing))?;
+        let mut solution_var = Solution::new_witness(cs.clone(), || solution.ok_or(SynthesisError::AssignmentMissing))?;
 
-        // Allocate the second component of the preimage.
-        let mut xr_value = self.xr;
-        let mut xr =
-            cs.new_witness_variable(|| xr_value.ok_or(SynthesisError::AssignmentMissing))?;
-
-        for i in 0..MIMC_ROUNDS {
-            // xL, xR := xR + (xL + Ci)^3, xL
-            let ns = ns!(cs, "round");
-            let cs = ns.cs();
-
-            // tmp = (xL + Ci)^2
-            let tmp_value = xl_value.map(|mut e| {
-                e.add_assign(&self.constants[i]);
-                e.square_in_place();
-                e
-            });
-            let tmp =
-                cs.new_witness_variable(|| tmp_value.ok_or(SynthesisError::AssignmentMissing))?;
-
-            cs.enforce_constraint(
-                lc!() + xl + (self.constants[i], Variable::One),
-                lc!() + xl + (self.constants[i], Variable::One),
-                lc!() + tmp,
-            )?;
-
-            // new_xL = xR + (xL + Ci)^3
-            // new_xL = xR + tmp * (xL + Ci)
-            // new_xL - xR = tmp * (xL + Ci)
-            let new_xl_value = xl_value.map(|mut e| {
-                e.add_assign(&self.constants[i]);
-                e.mul_assign(&tmp_value.unwrap());
-                e.add_assign(&xr_value.unwrap());
-                e
-            });
-
-            let new_xl = if i == (MIMC_ROUNDS - 1) {
-                // This is the last round, xL is our image and so
-                // we allocate a public input.
-                cs.new_input_variable(|| new_xl_value.ok_or(SynthesisError::AssignmentMissing))?
-            } else {
-                cs.new_witness_variable(|| new_xl_value.ok_or(SynthesisError::AssignmentMissing))?
-            };
-
-            cs.enforce_constraint(
-                lc!() + tmp,
-                lc!() + xl + (self.constants[i], Variable::One),
-                lc!() + new_xl - xr,
-            )?;
-
-            // xR = xL
-            xr = xl;
-            xr_value = xl_value;
-
-            // xL = new_xL
-            xl = new_xl;
-            xl_value = new_xl_value;
-        }
-
+        check_sudoku_solution(&sudoku_var, &solution_var)?;
+        check_rows(&solution_var)?;
+        check_cols(&solution_var)?;
+        check_3By3(&solution_var)?;
         Ok(())
     }
 }
 
 
 fn main() {
+
     println!("ZERO KNOWLEDGE SUDOKU R1CS");
     use ark_bls12_381::Fq as F;
     let sudoku = [
@@ -204,16 +159,44 @@ fn main() {
         [2,4,8,9,5,7,1,3,6],
         [7,6,3,4,1,8,2,5,9]
     ];
-    check_helper::<9, F>(&sudoku, &solution);
+
+    //To check correctness of zero knowledge proof
+    // check_helper::<9, F>(&sudoku, &solution);
 
     // This may not be cryptographically safe, use
     // `OsRng` (for example) in production software.
     let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(test_rng().next_u64());
 
+    //CIRCUIT SET UP
+    println!("SET UP CIRCUIT AND GENERATE PK AND VK");
     let (pk, vk) = {
-        let cs = ConstraintSystem::<Fr>::new_ref();
-        let sudoku_var = Sudoku::new_input(cs.clone(), || Ok(sudoku)).unwrap();
-        let solution_var = Solution::new_witness(cs.clone(), || Ok(solution)).unwrap();
-        Groth16::<Bls12_377>::setup(cs, &mut rng).unwrap()
+        let c = Puzzle::<9> {
+            sudoku:None,
+            solution:None
+        };
+        Groth16::<Bls12_381>::setup(c, &mut rng).unwrap()
     };
+
+    //GENERATE PROOFS
+    println!("GENERATE PROOF");
+    let example = Puzzle::<9>{
+        sudoku:Some(sudoku),
+        solution:Some(solution)
+    };
+
+    let proof = Groth16::<Bls12_381>::prove(&pk, example, &mut rng).unwrap();
+
+    //VERIFY PROOF
+    println!("VERIFIY PROOF");
+    let mut flat:Vec<BlsFr> = Vec::with_capacity(9*9);
+    for i in 0..9{
+        for j in 0..9{
+            flat.push(BlsFr::from(sudoku[i][j]));
+        }
+    }
+
+    // let xl = rng.gen();
+    assert!(
+        Groth16::<Bls12_381>::verify(&vk, &[], &proof).unwrap()
+    );
 }
